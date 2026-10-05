@@ -1,0 +1,331 @@
+#!/bin/bash
+# install-phpver.sh — Version PHP par sous-dossier de ~/Sites via un fichier .phpver
+# PHP-FPM Homebrew (/opt/homebrew), macOS Apple Silicon.
+#
+# Usage : install-phpver.sh [-m] [-l] [-n]
+#   (défaut) Apache Homebrew (/opt/homebrew/etc/httpd), vhosts dont le DocumentRoot est ~/Sites
+#   -m  Apache natif macOS (/etc/apache2) au lieu d'Apache Homebrew (demande sudo)
+#   -l  mode localhost : http://localhost/<projet>/, sans vhost ni HTTPS
+#       (DocumentRoot du serveur principal = ~/Sites, includes vhosts/ssl désactivés)
+#   -n  ne pas redémarrer les services ni lancer le test final
+#
+# Version PHP par défaut : celle de la formule « php » (sinon la plus récente installée).
+# Port : 80. Idempotent : à relancer après l'ajout ou la suppression d'une version PHP.
+# Chaque fichier modifié est sauvegardé en <fichier>.bak-phpver-<date>.
+
+set -euo pipefail
+
+SITES_DIR="$HOME/Sites"
+PREFIX="/opt/homebrew"
+PORT=80
+RESTART=1
+LOCAL=0
+NATIVE=0
+while getopts "mlnh" o; do
+  case $o in
+    m) NATIVE=1 ;;
+    l) LOCAL=1 ;;
+    n) RESTART=0 ;;
+    *) sed -n '2,15p' "$0"; exit 0 ;;
+  esac
+done
+
+msg()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m !!\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m xx\033[0m %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -ne 0 ] || die "Ne pas lancer en root / sudo (le script demande sudo lui-même si besoin)."
+command -v brew >/dev/null || die "Homebrew introuvable."
+
+if [ "$NATIVE" -eq 1 ]; then
+  HTTPD_ETC="/etc/apache2"
+  APACHECTL="/usr/sbin/apachectl"
+  SUDO="sudo"
+  MODE_LABEL="Apache natif macOS"
+else
+  HTTPD_ETC="$PREFIX/etc/httpd"
+  APACHECTL="$PREFIX/bin/apachectl"
+  SUDO=""
+  MODE_LABEL="Apache Homebrew"
+fi
+HTTPD_CONF="$HTTPD_ETC/httpd.conf"
+RUN_DIR="$PREFIX/var/run"
+MAP_SCRIPT="$HTTPD_ETC/bin/phpver-map"
+GLOBAL_CONF="$HTTPD_ETC/extra/phpver.conf"
+VHOST_INC="$HTTPD_ETC/extra/phpver-vhost.inc"
+USER_NAME="$(id -un)"
+GROUP_NAME="$(id -gn)"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+
+[ -f "$HTTPD_CONF" ] || die "httpd.conf introuvable ($HTTPD_CONF)"
+[ -d "$SITES_DIR" ]  || die "Dossier introuvable : $SITES_DIR (crée ~/Sites)"
+SITES_DIR="$(cd "$SITES_DIR" && pwd -P)"
+[ -n "$SUDO" ] && { msg "sudo requis pour modifier $HTTPD_ETC"; sudo -v; }
+
+backup()  { if [ -f "$1" ]; then $SUDO cp -p "$1" "$1.bak-phpver-$STAMP"; fi; }
+writef()  { $SUDO tee "$1" >/dev/null; }      # écrit stdin dans $1
+
+# --- 1. Versions PHP installées (formule brew + config FPM) -------------------
+MAIN_VER=""
+if [ -x "$PREFIX/opt/php/bin/php" ]; then
+  MAIN_VER="$("$PREFIX/opt/php/bin/php" -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
+fi
+VERSIONS=""; FORMULAS=""
+for d in "$PREFIX"/etc/php/*/; do
+  v="$(basename "$d")"
+  [[ "$v" =~ ^[0-9]+\.[0-9]+$ ]] || continue
+  if [ "$v" = "$MAIN_VER" ] && [ -x "$PREFIX/opt/php/sbin/php-fpm" ]; then f="php"
+  elif [ -x "$PREFIX/opt/php@$v/sbin/php-fpm" ]; then f="php@$v"
+  else warn "PHP $v : config présente mais formule non installée, ignorée"; continue; fi
+  [ -f "$d/php-fpm.d/www.conf" ] || { warn "PHP $v : php-fpm.d/www.conf absent, ignorée"; continue; }
+  VERSIONS="$VERSIONS $v"; FORMULAS="$FORMULAS $f"
+done
+VERSIONS="${VERSIONS# }"; FORMULAS="${FORMULAS# }"
+[ -n "$VERSIONS" ] || die "Aucune version PHP-FPM Homebrew trouvée (brew install php)."
+VERSIONS="$(printf '%s\n' $VERSIONS | sort -t. -k1,1n -k2,2n | tr '\n' ' ')"; VERSIONS="${VERSIONS% }"
+
+case " $VERSIONS " in
+  *" $MAIN_VER "*) PHP_DEFAULT="$MAIN_VER" ;;
+  *) PHP_DEFAULT="${VERSIONS##* }" ;;
+esac
+msg "$MODE_LABEL — dossier : $SITES_DIR"
+msg "Versions PHP : $VERSIONS — défaut : $PHP_DEFAULT"
+[ "$LOCAL" -eq 1 ] && msg "Mode localhost : http://localhost/ (sans vhost ni HTTPS)"
+
+# --- 2. Pools FPM : un socket par version -------------------------------------
+for v in $VERSIONS; do
+  f="$PREFIX/etc/php/$v/php-fpm.d/www.conf"
+  cp -p "$f" "$f.bak-phpver-$STAMP"
+  U="$USER_NAME" G="$GROUP_NAME" SOCK="$RUN_DIR/php-fpm-$v.sock" perl -pi -e '
+    s/^user\s*=.*/user = $ENV{U}/;
+    s/^group\s*=.*/group = $ENV{G}/;
+    s/^listen\s*=.*/listen = $ENV{SOCK}/;
+    s/^;?listen\.mode\s*=.*/listen.mode = 0666/;
+    s/^pm\s*=.*/pm = ondemand/;
+    s/^;?pm\.process_idle_timeout\s*=.*/pm.process_idle_timeout = 30s/;
+  ' "$f"
+done
+msg "Pools FPM configurés ($RUN_DIR/php-fpm-X.Y.sock)"
+
+# --- 3. Script RewriteMap -------------------------------------------------------
+$SUDO mkdir -p "$(dirname "$MAP_SCRIPT")"
+backup "$MAP_SCRIPT"
+{
+  cat <<'EOF'
+#!/bin/bash
+# RewriteMap prg: reçoit un nom de sous-dossier sur stdin,
+# renvoie la version PHP à utiliser (contenu de son fichier .phpver).
+# Repli sur DEFAULT si .phpver absent/vide ou si la version n'a pas de socket FPM actif.
+# Généré par install-phpver.sh
+EOF
+  printf 'ROOT="%s"\nSOCKDIR="%s"\nDEFAULT="%s"\n' "$SITES_DIR" "$RUN_DIR" "$PHP_DEFAULT"
+  cat <<'EOF'
+
+while read -r dir; do
+  v=""
+  # Nom de dossier simple uniquement (pas de ../)
+  if [[ "$dir" =~ ^[A-Za-z0-9._-]+$ ]] && [ -r "$ROOT/$dir/.phpver" ]; then
+    # Garde X.Y : accepte "7.4", "php7.4", "8.2.12"...
+    v=$(head -n1 "$ROOT/$dir/.phpver" | grep -oE '[0-9]+\.[0-9]+' | head -n1)
+  fi
+  if [ -z "$v" ] || [ ! -S "$SOCKDIR/php-fpm-$v.sock" ]; then
+    v="$DEFAULT"
+  fi
+  echo "$v"
+done
+EOF
+} | writef "$MAP_SCRIPT"
+$SUDO chmod 755 "$MAP_SCRIPT"
+
+# --- 4. Conf globale + include de sélection --------------------------------------
+sock() { printf 'proxy:unix:%s/php-fpm-%s.sock|fcgi://php%s' "$RUN_DIR" "$1" "${1//./}"; }
+
+backup "$GLOBAL_CONF"
+{
+  echo "# --- Sélection dynamique de la version PHP (PHP-FPM) — généré par install-phpver.sh ---"
+  echo "ProxyTimeout 300"
+  echo
+  if [ "$LOCAL" -eq 1 ]; then
+    echo "# Mode localhost : sélection par sous-dossier au niveau du serveur principal"
+    echo "Include $VHOST_INC"
+  else
+    echo "# Handler par défaut pour tout le serveur (hors vhosts qui incluent phpver-vhost.inc)"
+    printf '<FilesMatch "\\.php$">\n    SetHandler "%s"\n</FilesMatch>\n' "$(sock "$PHP_DEFAULT")"
+  fi
+  printf '\n# Ne pas servir les fichiers .phpver\n<Files ".phpver">\n    Require all denied\n</Files>\n'
+} | writef "$GLOBAL_CONF"
+
+backup "$VHOST_INC"
+{
+  cat <<EOF
+# --- À inclure dans un <VirtualHost> (ou le serveur principal) dont le DocumentRoot est $SITES_DIR ---
+# Le 1er segment d'URL (sous-dossier) détermine la version PHP via son fichier .phpver
+# Généré par install-phpver.sh
+RewriteEngine On
+# Map déclarée par vhost : une RewriteMap globale n'est pas héritée par les vhosts
+RewriteMap phpver "prg:$MAP_SCRIPT"
+RewriteCond %{REQUEST_URI} ^/([^/]+)/
+RewriteRule ^ - [E=PHPVER:\${phpver:%1|$PHP_DEFAULT}]
+
+<FilesMatch "\.php\$">
+EOF
+  kw="If"
+  for v in $VERSIONS; do
+    [ "$v" = "$PHP_DEFAULT" ] && continue
+    printf '    <%s "reqenv('"'"'PHPVER'"'"') == '"'"'%s'"'"'">\n        SetHandler "%s"\n    </%s>\n' "$kw" "$v" "$(sock "$v")" "$kw"
+    kw="ElseIf"
+  done
+  if [ "$kw" = "If" ]; then
+    printf '    SetHandler "%s"\n' "$(sock "$PHP_DEFAULT")"
+  else
+    printf '    <Else>\n        # Défaut : racine, .phpver absent, version non installée\n        SetHandler "%s"\n    </Else>\n' "$(sock "$PHP_DEFAULT")"
+  fi
+  echo '</FilesMatch>'
+} | writef "$VHOST_INC"
+msg "Fichiers générés dans $HTTPD_ETC : bin/phpver-map, extra/phpver.conf, extra/phpver-vhost.inc"
+
+# --- 5. httpd.conf -----------------------------------------------------------
+backup "$HTTPD_CONF"
+$SUDO env INC="$GLOBAL_CONF" U="$USER_NAME" G="$GROUP_NAME" perl -0pi -e '
+  # Modules nécessaires
+  s/^#[ \t]*(LoadModule\s+(?:proxy_module|proxy_fcgi_module|rewrite_module|mpm_event_module)\s)/$1/mg;
+  # Modules incompatibles : autres MPM, mod_php
+  s/^(LoadModule\s+(?:mpm_prefork_module|mpm_worker_module|php\d*_module)\s)/#$1/mg;
+  # Ancien handler mod_php
+  s/^<FilesMatch\s+"?\\\.php\$"?>[ \t]*\n[ \t]*SetHandler\s+application\/x-httpd-php[ \t]*\n<\/FilesMatch>[ \t]*\n/# Handler PHP : voir extra\/phpver.conf (PHP-FPM multi-versions)\n/mg;
+  s/^([ \t]*AddType\s+application\/x-httpd-php\b)/#$1/mg;
+  # Apache tourne sous ton utilisateur (accès à ~/Sites)
+  s/^User[ \t]+\S+/User $ENV{U}/m;
+  s/^Group[ \t]+\S+/Group $ENV{G}/m;
+  # Include de la conf globale, avant les vhosts
+  unless (/^Include\s+"?\Q$ENV{INC}\E/m) {
+    s/^(Include\s+\S*httpd-vhosts\.conf)/# PHP-FPM multi-versions (.phpver)\nInclude $ENV{INC}\n$1/m
+      or $_ .= "\n# PHP-FPM multi-versions (.phpver)\nInclude $ENV{INC}\n";
+  }
+  # HTTP/2
+  if (/^LoadModule\s+http2_module\s.*\n/m && !/^\s*Protocols\s/m) {
+    s/^(LoadModule\s+http2_module\s.*\n)/$1<IfModule http2_module>\n    Protocols h2 h2c http\/1.1\n<\/IfModule>\n/m;
+  }
+' "$HTTPD_CONF"
+msg "httpd.conf : proxy_fcgi + rewrite + mpm_event activés, mod_php désactivé, User $USER_NAME"
+
+if [ "$LOCAL" -eq 1 ]; then
+  $SUDO env SITES="$SITES_DIR" PORT="$PORT" perl -0pi -e '
+    my ($s, $p) = ($ENV{SITES}, $ENV{PORT});
+    # DocumentRoot + bloc <Directory> associé
+    if (/^DocumentRoot[ \t]+"?([^"\n]+?)"?[ \t]*$/m) {
+      my $old = $1;
+      s/^DocumentRoot[ \t]+.*$/DocumentRoot "$s"/m;
+      s/^<Directory[ \t]+"?\Q$old\E\/?"?>/<Directory "$s">/m if $old ne $s;
+    }
+    s{(<Directory[ \t]+"\Q$s\E">)(.*?)(</Directory>)}{
+      my ($o, $b, $c) = ($1, $2, $3);
+      $b =~ s/^([ \t]*AllowOverride)[ \t]+.*$/$1 All/m;
+      "$o$b$c";
+    }se;
+    # Port + ServerName
+    s/^Listen[ \t]+\S+/Listen $p/m;
+    s/^ServerName[ \t]+\S+/ServerName localhost:$p/m
+      or s/^#ServerName[ \t]+\S+/ServerName localhost:$p/m;
+    # Index PHP
+    s/^([ \t]*DirectoryIndex)[ \t]+index\.html[ \t]*$/$1 index.php index.html/m;
+    # Pas de vhosts ni de HTTPS
+    s/^(Include[ \t]+\S*(?:httpd-vhosts|httpd-ssl)\.conf)/#$1/mg;
+  ' "$HTTPD_CONF"
+  msg "httpd.conf : DocumentRoot ~/Sites, Listen $PORT, vhosts et HTTPS désactivés"
+fi
+
+# --- 6. Vhosts dont le DocumentRoot est ~/Sites -------------------------------
+HOSTS_FILE="$(mktemp)"; chmod 666 "$HOSTS_FILE"
+TDIR=""
+trap 'rm -f "$HOSTS_FILE"; [ -n "$TDIR" ] && rm -rf "$TDIR"-* ' EXIT
+if [ "$LOCAL" -eq 1 ]; then
+  echo "localhost" > "$HOSTS_FILE"
+else
+  CONF_FILES="$HTTPD_CONF"
+  while read -r p; do
+    case "$p" in /*) ;; *) p="$HTTPD_ETC/$p" ;; esac
+    for f in $p; do
+      [ -f "$f" ] && CONF_FILES="$CONF_FILES"$'\n'"$f"
+    done
+  done < <(awk 'tolower($1) ~ /^include(optional)?$/ { gsub(/"/, "", $2); print $2 }' "$HTTPD_CONF")
+
+  NB=0
+  while IFS= read -r f; do
+    case "$f" in *phpver*) continue ;; esac
+    grep -qE '^[[:space:]]*<VirtualHost' "$f" || continue
+    before="$(grep -c 'phpver-vhost.inc' "$f" || true)"
+    tmp="$(mktemp)"; cp -p "$f" "$tmp"
+    $SUDO env SITES="$SITES_DIR" VINC="$VHOST_INC" HOSTS="$HOSTS_FILE" perl -0pi -e '
+      my $root = quotemeta $ENV{SITES};
+      s{(<VirtualHost\b[^>]*>)(.*?)(</VirtualHost>)}{
+        my ($o, $b, $c) = ($1, $2, $3);
+        if ($b =~ /^[ \t]*DocumentRoot[ \t]+"?$root\/?"?[ \t]*$/m) {
+          $b =~ s/^([ \t]*)(DocumentRoot[ \t]+"?$root\/?"?[ \t]*\n)/$1$2$1Include $ENV{VINC}\n/m
+            unless $b =~ /phpver-vhost\.inc/;
+          if ($b =~ /^[ \t]*ServerName[ \t]+(\S+)/m) {
+            open my $h, ">>", $ENV{HOSTS}; print $h "$1\n"; close $h;
+          }
+        }
+        "$o$b$c";
+      }gse;
+    ' "$f"
+    after="$(grep -c 'phpver-vhost.inc' "$f" || true)"
+    if [ "$after" != "$before" ]; then
+      $SUDO cp -p "$tmp" "$f.bak-phpver-$STAMP"
+      msg "Vhost(s) modifié(s) : $f (+$((after - before)))"
+    fi
+    rm -f "$tmp"
+    NB=$((NB + after))
+  done <<< "$CONF_FILES"
+  [ "$NB" -gt 0 ] || warn "Aucun <VirtualHost> avec DocumentRoot $SITES_DIR : ajoute « Include $VHOST_INC » dans le vhost voulu, ou relance avec -l."
+fi
+TEST_HOST="$(head -n1 "$HOSTS_FILE" | sed 's/:.*//')"
+
+# --- 7. Redémarrage + test -----------------------------------------------------
+if [ "$RESTART" -eq 0 ]; then
+  msg "Terminé (-n) : redémarre FPM et Apache toi-même."
+  exit 0
+fi
+
+msg "Redémarrage des PHP-FPM…"
+for f in $FORMULAS; do brew services restart "$f" >/dev/null 2>&1 || warn "Échec : brew services restart $f"; done
+for v in $VERSIONS; do
+  for _ in $(seq 20); do [ -S "$RUN_DIR/php-fpm-$v.sock" ] && break; sleep 0.5; done
+  [ -S "$RUN_DIR/php-fpm-$v.sock" ] || warn "Socket PHP $v absent (voir $PREFIX/var/log/php-fpm.log)"
+done
+
+msg "Vérification de la conf Apache…"
+$SUDO "$APACHECTL" configtest || die "Conf Apache invalide : restaure les .bak-phpver-$STAMP"
+if [ "$NATIVE" -eq 1 ]; then
+  # Un seul Apache sur le port 80 : on arrête celui de Homebrew s'il tourne
+  if brew services list 2>/dev/null | grep -qE '^httpd[[:space:]]+started'; then
+    msg "Arrêt d'Apache Homebrew (conflit de port)"; brew services stop httpd >/dev/null
+  fi
+  sudo "$APACHECTL" stop >/dev/null 2>&1 || true
+  sudo "$APACHECTL" start
+else
+  if pgrep -f '^/usr/sbin/httpd' >/dev/null; then
+    msg "Arrêt d'Apache natif macOS (conflit de port)"; sudo /usr/sbin/apachectl stop >/dev/null 2>&1 || true
+  fi
+  brew services restart httpd >/dev/null
+fi
+[ -n "$TEST_HOST" ] || TEST_HOST="localhost"
+URL_BASE="http://$TEST_HOST"
+for _ in $(seq 20); do curl -s -o /dev/null "$URL_BASE/" && break; sleep 0.5; done
+
+msg "Test sur $URL_BASE…"
+TDIR="$SITES_DIR/_phpver_test_$$"
+OK=1
+for v in $VERSIONS none; do
+  mkdir -p "$TDIR-$v"
+  printf '<?php echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' > "$TDIR-$v/v.php"
+  [ "$v" = none ] || echo "$v" > "$TDIR-$v/.phpver"
+  want="$v"; [ "$v" = none ] && want="$PHP_DEFAULT"
+  got="$(curl -s "$URL_BASE/$(basename "$TDIR")-$v/v.php" || true)"
+  rm -rf "$TDIR-$v"
+  if [ "$got" = "$want" ]; then printf '   %-5s → %s ✓\n' "$v" "$got"
+  else printf '   %-5s → %s ✗ (attendu %s)\n' "$v" "${got:-vide}" "$want"; OK=0; fi
+done
+if [ "$OK" -eq 1 ]; then msg "Tout est OK."
+else warn "Test en échec : voir le error_log d'Apache"; fi
