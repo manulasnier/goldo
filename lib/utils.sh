@@ -112,6 +112,23 @@ path_line() {
 }
 
 # ==============================================================================
+# TÉLÉCHARGEMENT D'UNE VERSION
+# ==============================================================================
+
+# download_release <url du dépôt> <tag ou vide pour la branche par défaut> <dossier>
+# init + fetch plutôt que « clone --depth 1 --branch <tag> » : sur un tag annoté,
+# le clone affiche « warning: refs/tags/vX.Y.Z ... is not a commit! »
+download_release() {
+    local url=$1
+    local tag=$2
+    local dest=$3
+
+    git init --quiet "$dest" &&
+        git -C "$dest" fetch --quiet --depth 1 "$url" ${tag:+"refs/tags/$tag"} &&
+        git -C "$dest" -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+}
+
+# ==============================================================================
 # VALIDATION
 # ==============================================================================
 

@@ -21,8 +21,8 @@ perform_update() {
 
     print_info "Téléchargement de la version $latest_version..."
 
-    # git clone SANS sudo (user courant = accès SSH)
-    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "v$latest_version" "$REPO_URL" "$TEMP_DIR/goldo" || {
+    # Téléchargement SANS sudo (user courant = accès SSH)
+    download_release "$REPO_URL" "v$latest_version" "$TEMP_DIR/goldo" || {
         print_error "Échec du téléchargement de la version $latest_version"
         exit 1
     }

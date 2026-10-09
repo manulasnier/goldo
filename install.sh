@@ -66,7 +66,7 @@ main() {
         local tag
         tag="$(latest_tag)"
         print_step "Téléchargement de goldo ${tag:-(main)}"
-        git -c advice.detachedHead=false clone --quiet --depth 1 ${tag:+--branch "$tag"} "$REPO_HTTPS" "$TEMP_DIR/goldo" ||
+        download_release "$REPO_HTTPS" "$tag" "$TEMP_DIR/goldo" ||
             die "Échec du téléchargement de $REPO_HTTPS"
         REPO_DIR="$TEMP_DIR/goldo"
     fi

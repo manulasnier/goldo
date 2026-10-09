@@ -5,6 +5,11 @@ Toutes les modifications notables de ce projet seront documentées dans ce fichi
 Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/),
 et ce projet adhère à [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.4] - 2026-10-09
+
+### Corrigé
+- `goldo update` et `install.sh` : plus d'avertissement « refs/tags/vX.Y.Z ... is not a commit! » au téléchargement d'une version (fetch du tag au lieu d'un clone partiel)
+
 ## [0.0.3] - 2026-10-09
 
 ### Corrigé
