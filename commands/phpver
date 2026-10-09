@@ -316,7 +316,7 @@ fi
 URL_BASE="http://$TEST_HOST"
 for _ in $(seq 20); do curl -s -o /dev/null "$URL_BASE/" && break; sleep 0.5; done
 
-msg "Test sur $URL_BASE…"
+msg "Test sur ${URL_BASE}…"
 TDIR="$SITES_DIR/_phpver_test_$$"
 OK=1
 for v in $VERSIONS none; do

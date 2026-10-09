@@ -5,6 +5,11 @@ Toutes les modifications notables de ce projet seront documentées dans ce fichi
 Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/),
 et ce projet adhère à [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.3] - 2026-10-09
+
+### Corrigé
+- `goldo phpver` : le test final plantait (« URL_BASE: unbound variable ») avec le bash de macOS, la variable étant collée à un caractère UTF-8
+
 ## [0.0.2] - 2026-10-09
 
 ### Ajouté
