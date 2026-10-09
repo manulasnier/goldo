@@ -5,6 +5,17 @@ Toutes les modifications notables de ce projet seront documentées dans ce fichi
 Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/),
 et ce projet adhère à [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.2] - 2026-10-09
+
+### Ajouté
+- `goldo check` : contrôle du poste (macOS, outils de ligne de commande Xcode, Homebrew, clé SSH) avec proposition d'installation des outils Xcode et de Homebrew ; simple avertissement si aucune clé SSH
+- contrôle lancé au début de `install.sh` et de `goldo install`
+- `install.sh` lançable sans clone : `bash -c "$(curl -fsSL https://raw.githubusercontent.com/manulasnier/goldo/main/install.sh)"` (installe le dernier tag)
+
+### Modifié
+- Homebrew ajouté au PATH dans le profil du shell de l'utilisateur (zsh, bash, fish)
+- README orienté usage
+
 ## [0.0.1] - 2026-10-09
 
 ### Ajouté

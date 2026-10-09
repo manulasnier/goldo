@@ -81,6 +81,37 @@ ask_yes_no() {
 }
 
 # ==============================================================================
+# SHELL DE L'UTILISATEUR (zsh par défaut sur macOS)
+# ==============================================================================
+
+# Shell de connexion : zsh, bash, fish...
+login_shell() {
+    local sh
+    sh="$(dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null | awk '{ print $2 }')"
+    sh="$(basename "${sh:-${SHELL:-/bin/zsh}}")"
+    echo "${sh:-zsh}"
+}
+
+# Fichier lu à l'ouverture d'un terminal, selon le shell
+shell_profile() {
+    case "$(login_shell)" in
+        zsh)  echo "$HOME/.zprofile" ;;
+        bash) echo "$HOME/.bash_profile" ;;
+        fish) echo "$HOME/.config/fish/config.fish" ;;
+        *)    echo "$HOME/.profile" ;;
+    esac
+}
+
+# Ligne qui ajoute un dossier au PATH, dans la syntaxe du shell
+path_line() {
+    if [ "$(login_shell)" = "fish" ]; then
+        echo "fish_add_path $1"
+    else
+        echo "export PATH=\"$1:\$PATH\""
+    fi
+}
+
+# ==============================================================================
 # VALIDATION
 # ==============================================================================
 

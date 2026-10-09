@@ -1,5 +1,9 @@
 #!/bin/bash
 # install.sh — installe la commande goldo dans /usr/local/bin
+#
+# Depuis un clone du dépôt :  ./install.sh
+# Sans clone (dernière version publiée) :
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/manulasnier/goldo/main/install.sh)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -7,27 +11,46 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-print_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_error()   { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
-print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-
-[ "$(uname -s)" = "Darwin" ] || print_error "goldo ne fonctionne que sur macOS."
-[ "$(id -u)" -ne 0 ] || print_error "Ne pas lancer en root / sudo (le script demande sudo lui-même)."
-
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
-VERSION_FILE="$REPO_DIR/VERSION"
+REPO_HTTPS="https://github.com/manulasnier/goldo.git"
+RAW_URL="https://raw.githubusercontent.com/manulasnier/goldo/main"
 BIN_DIR="/usr/local/bin"
 GOLDO_DIR="/usr/local/lib/goldo"
+TEMP_DIR="$(mktemp -d)"
 
-get_current_version() {
-    [ -f "$VERSION_FILE" ] || print_error "Fichier VERSION introuvable dans $VERSION_FILE"
+trap 'rm -rf "$TEMP_DIR"' EXIT
 
-    local version
-    version=$(tr -d '[:space:]' < "$VERSION_FILE")
-    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || print_error "Format de version invalide dans $VERSION_FILE"
+die() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 
-    echo "$version"
+[ "$(uname -s)" = "Darwin" ] || die "goldo ne fonctionne que sur macOS."
+[ "$(id -u)" -ne 0 ] || die "Ne pas lancer en root / sudo (le script demande sudo lui-même)."
+
+# ==============================================================================
+# Source : clone local, ou téléchargement (lancé via curl)
+# ==============================================================================
+
+SCRIPT_PATH="${BASH_SOURCE[0]:-}"
+if [ -n "$SCRIPT_PATH" ] && [ -f "$(dirname "$SCRIPT_PATH")/bin/goldo" ]; then
+    REPO_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+    LIB_SRC="$REPO_DIR/lib"
+else
+    REPO_DIR=""
+    LIB_SRC="$TEMP_DIR/lib"
+    mkdir -p "$LIB_SRC"
+    for lib in utils check; do
+        curl -fsSL "$RAW_URL/lib/$lib.sh" -o "$LIB_SRC/$lib.sh" || die "Téléchargement impossible : $RAW_URL/lib/$lib.sh"
+    done
+fi
+
+source "$LIB_SRC/utils.sh"
+source "$LIB_SRC/check.sh"
+
+# Dernière version publiée (tag vX.Y.Z), sinon main
+latest_tag() {
+    git ls-remote --tags "$REPO_HTTPS" 2>/dev/null |
+        grep -oE 'refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' |
+        sed 's|refs/tags/||' |
+        awk -F'[v.]' '{ printf "%05d%05d%05d\t%s\n", $2, $3, $4, $0 }' |
+        sort | tail -n1 | cut -f2
 }
 
 main() {
@@ -37,38 +60,44 @@ main() {
     echo "╚════════════════════════════════════════╝"
     echo -e "${NC}"
 
-    [ -f "$REPO_DIR/bin/goldo" ] || print_error "Fichier bin/goldo non trouvé dans $REPO_DIR"
+    run_checks || die "Pré-requis manquants : installation interrompue."
+
+    if [ -z "$REPO_DIR" ]; then
+        local tag
+        tag="$(latest_tag)"
+        print_step "Téléchargement de goldo ${tag:-(main)}"
+        git -c advice.detachedHead=false clone --quiet --depth 1 ${tag:+--branch "$tag"} "$REPO_HTTPS" "$TEMP_DIR/goldo" ||
+            die "Échec du téléchargement de $REPO_HTTPS"
+        REPO_DIR="$TEMP_DIR/goldo"
+    fi
 
     local version
-    version=$(get_current_version)
-    print_info "Version $version"
+    version="$(tr -d '[:space:]' < "$REPO_DIR/VERSION")"
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Format de version invalide dans $REPO_DIR/VERSION"
 
+    print_step "Installation de goldo $version"
     print_info "L'installation nécessite les droits sudo"
-    sudo -v || print_error "Échec de l'élévation des privilèges"
+    sudo -v || die "Échec de l'élévation des privilèges"
 
-    local tmp
-    tmp=$(mktemp)
-    sed -e "s/^VERSION=\".*\"/VERSION=\"$version\"/" "$REPO_DIR/bin/goldo" > "$tmp"
+    sed -e "s/^VERSION=\".*\"/VERSION=\"$version\"/" "$REPO_DIR/bin/goldo" > "$TEMP_DIR/goldo.bin"
 
-    sudo mkdir -p "$BIN_DIR" "$GOLDO_DIR/commands" "$GOLDO_DIR/lib" || print_error "Échec création des répertoires"
-    sudo install -m 755 "$tmp" "$BIN_DIR/goldo" || print_error "Échec copie du binaire"
-    rm -f "$tmp"
-    sudo install -m 755 "$REPO_DIR/commands/"* "$GOLDO_DIR/commands/" || print_error "Échec copie des commandes"
-    sudo install -m 644 "$REPO_DIR/lib/"* "$GOLDO_DIR/lib/" || print_error "Échec copie des librairies"
+    sudo mkdir -p "$BIN_DIR" "$GOLDO_DIR/commands" "$GOLDO_DIR/lib" || die "Échec création des répertoires"
+    sudo install -m 755 "$TEMP_DIR/goldo.bin" "$BIN_DIR/goldo" || die "Échec copie du binaire"
+    sudo install -m 755 "$REPO_DIR/commands/"* "$GOLDO_DIR/commands/" || die "Échec copie des commandes"
+    sudo install -m 644 "$REPO_DIR/lib/"* "$GOLDO_DIR/lib/" || die "Échec copie des librairies"
 
     print_success "goldo $version installé : $BIN_DIR/goldo"
 
-    if ! command -v goldo &>/dev/null; then
+    if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
         print_warning "$BIN_DIR n'est pas dans votre PATH."
-        print_info "Ajoutez-le : echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.zshrc"
+        print_info "Ajoutez-le : echo '$(path_line "$BIN_DIR")' >> $(shell_profile)"
     fi
 
     echo ""
-    read -r -p "Lancer l'installation du devstack maintenant (goldo install) ? [O/n]: " answer
-    if [[ "${answer:-o}" =~ ^[OoYy] ]]; then
-        "$BIN_DIR/goldo" install
+    if ask_yes_no "Lancer l'installation de l'environnement maintenant (goldo install) ?" "o"; then
+        GOLDO_CHECKED=1 "$BIN_DIR/goldo" install
     else
-        print_info "Pour installer le devstack : goldo install"
+        print_info "Pour installer l'environnement : goldo install"
     fi
 }
 

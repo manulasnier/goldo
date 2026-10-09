@@ -65,6 +65,7 @@ show_help() {
     echo ""
     echo -e "${BLUE}Commands:${NC}"
     echo -e "  ${GREEN}install, i${NC}          Installe le devstack (Apache, PHP-FPM, MariaDB/MySQL, SSL local)"
+    echo -e "  ${GREEN}check, ck${NC}           Contrôle le poste (macOS, Homebrew, clé SSH) et propose les installations"
     echo -e "  ${GREEN}phpver, p${NC}           (Re)configure PHP-FPM multi-versions (.phpver par projet)"
     echo -e "  ${GREEN}config, c${NC}           Affiche la configuration du devstack"
     echo -e "  ${GREEN}update, u${NC}           Met à jour goldo"
@@ -113,6 +114,10 @@ case "$1" in
     install|i)
         shift
         run_command "install" "$@"
+        ;;
+    check|ck)
+        shift
+        run_command "check" "$@"
         ;;
     phpver|p)
         shift

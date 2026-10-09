@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# ==============================================================================
+# goldo check — contrôle du poste (macOS, outils Xcode, Homebrew, clé SSH)
+# ==============================================================================
+
+for lib in utils version check; do
+    if [ ! -f "$LIB_DIR/${lib}.sh" ]; then
+        echo "[ERROR] Librairie manquante : $LIB_DIR/${lib}.sh" >&2
+        exit 1
+    fi
+    source "$LIB_DIR/${lib}.sh"
+done
+
+run_checks

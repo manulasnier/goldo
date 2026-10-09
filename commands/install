@@ -9,7 +9,7 @@ set -uo pipefail
 # comme valeurs par défaut et régénère la conf.
 # ==============================================================================
 
-for lib in utils version; do
+for lib in utils version check; do
     if [ ! -f "$LIB_DIR/${lib}.sh" ]; then
         echo "[ERROR] Librairie manquante : $LIB_DIR/${lib}.sh" >&2
         exit 1
@@ -24,36 +24,19 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 # ==============================================================================
 
 check_requirements() {
-    if [ "$(uname -s)" != "Darwin" ]; then
-        print_error "goldo install ne fonctionne que sur macOS."
-        exit 1
-    fi
-
     if [ "$(id -u)" -eq 0 ]; then
         print_error "Ne pas lancer en root / sudo (goldo demande sudo lui-même si besoin)."
         exit 1
     fi
 
-    if ! command -v brew &>/dev/null; then
-        for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
-            [ -x "$b" ] && eval "$("$b" shellenv)" && break
-        done
-    fi
-
-    if ! command -v brew &>/dev/null; then
-        print_warning "Homebrew n'est pas installé."
-        if ask_yes_no "Installer Homebrew maintenant ?" "o"; then
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || {
-                print_error "Échec de l'installation de Homebrew"
-                exit 1
-            }
-            for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
-                [ -x "$b" ] && eval "$("$b" shellenv)" && break
-            done
-        else
-            print_error "Homebrew est requis : https://brew.sh"
+    # Contrôles déjà faits par install.sh juste avant
+    if [ "${GOLDO_CHECKED:-0}" = "1" ]; then
+        load_brew
+    else
+        run_checks || {
+            print_error "Pré-requis manquants : installation interrompue."
             exit 1
-        fi
+        }
     fi
 
     PREFIX="$(brew --prefix)"

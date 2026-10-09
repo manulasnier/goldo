@@ -25,16 +25,23 @@ Tout passe par Homebrew, qui est installé s'il est absent.
 
 ## Installation
 
+Dans un terminal :
+
 ```bash
-git clone git@github.com:manulasnier/goldo.git && \
-cd goldo && \
-./install.sh && \
-cd .. && \
-rm -rf goldo
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/manulasnier/goldo/main/install.sh)"
 ```
 
-L'installation ajoute la commande `goldo` au système, puis propose de lancer tout de suite
-l'installation de l'environnement.
+Le script vérifie d'abord que le poste est prêt, et propose d'installer ce qui manque :
+
+- **macOS** : goldo ne fonctionne que sur Mac
+- **Outils de ligne de commande Xcode** (git, compilateurs), nécessaires à Homebrew
+- **Homebrew**, installé et fonctionnel
+- **Une clé SSH** : simple avertissement si aucune clé n'est présente
+
+Il installe ensuite la commande `goldo`, puis propose de lancer tout de suite l'installation
+de l'environnement.
+
+Depuis un clone du dépôt, `./install.sh` fait la même chose.
 
 ## Utilisation
 
@@ -73,6 +80,7 @@ Le changement est immédiat. Après avoir installé une nouvelle version de PHP,
 
 | Commande | Rôle |
 |---|---|
+| `goldo check` | Vérifie le poste (macOS, Homebrew, clé SSH) et propose les installations |
 | `goldo phpver` | Prend en compte les versions de PHP installées |
 | `goldo config` | Affiche les réglages de l'environnement |
 | `goldo update` | Met à jour goldo |
