@@ -5,7 +5,7 @@ Toutes les modifications notables de ce projet seront documentées dans ce fichi
 Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/),
 et ce projet adhère à [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2026-10-09
+## [0.0.1] - 2026-10-09
 
 ### Ajouté
 - commande `goldo` (structure pw-cli : `bin/`, `lib/`, `commands/`, `install.sh`)
