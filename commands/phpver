@@ -1,22 +1,22 @@
 #!/bin/bash
-# install-phpver.sh — Version PHP par sous-dossier de ~/Sites via un fichier .phpver
-# PHP-FPM Homebrew (/opt/homebrew), macOS Apple Silicon.
+# goldo phpver — Version PHP par sous-dossier du DocumentRoot via un fichier .phpver
+# PHP-FPM Homebrew, macOS. DocumentRoot : GOLDO_DOC_ROOT de ~/.goldo (défaut ~/Sites).
 #
-# Usage : install-phpver.sh [-m] [-l] [-n]
-#   (défaut) Apache Homebrew (/opt/homebrew/etc/httpd), vhosts dont le DocumentRoot est ~/Sites
+# Usage : goldo phpver [-m] [-l] [-n]
+#   (défaut) Apache Homebrew ($(brew --prefix)/etc/httpd), vhosts dont le DocumentRoot est celui de goldo
 #   -m  Apache natif macOS (/etc/apache2) au lieu d'Apache Homebrew (demande sudo)
 #   -l  mode localhost : http://localhost/<projet>/, sans vhost ni HTTPS
-#       (DocumentRoot du serveur principal = ~/Sites, includes vhosts/ssl désactivés)
+#       (DocumentRoot du serveur principal = DocumentRoot goldo, includes vhosts/ssl désactivés)
 #   -n  ne pas redémarrer les services ni lancer le test final
 #
-# Version PHP par défaut : celle de la formule « php » (sinon la plus récente installée).
+# Version PHP par défaut : GOLDO_PHP de ~/.goldo, sinon celle de la formule « php »
+# (sinon la plus récente installée).
 # Port : 80. Idempotent : à relancer après l'ajout ou la suppression d'une version PHP.
 # Chaque fichier modifié est sauvegardé en <fichier>.bak-phpver-<date>.
 
 set -euo pipefail
 
-SITES_DIR="$HOME/Sites"
-PREFIX="/opt/homebrew"
+SITES_DIR="${GOLDO_DOC_ROOT:-$HOME/Sites}"
 PORT=80
 RESTART=1
 LOCAL=0
@@ -36,6 +36,7 @@ die()  { printf '\033[1;31m xx\033[0m %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -ne 0 ] || die "Ne pas lancer en root / sudo (le script demande sudo lui-même si besoin)."
 command -v brew >/dev/null || die "Homebrew introuvable."
+PREFIX="$(brew --prefix)"
 
 if [ "$NATIVE" -eq 1 ]; then
   HTTPD_ETC="/etc/apache2"
@@ -58,7 +59,7 @@ GROUP_NAME="$(id -gn)"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
 [ -f "$HTTPD_CONF" ] || die "httpd.conf introuvable ($HTTPD_CONF)"
-[ -d "$SITES_DIR" ]  || die "Dossier introuvable : $SITES_DIR (crée ~/Sites)"
+[ -d "$SITES_DIR" ]  || die "Dossier introuvable : $SITES_DIR (lance goldo install)"
 SITES_DIR="$(cd "$SITES_DIR" && pwd -P)"
 [ -n "$SUDO" ] && { msg "sudo requis pour modifier $HTTPD_ETC"; sudo -v; }
 
@@ -85,6 +86,7 @@ VERSIONS="${VERSIONS# }"; FORMULAS="${FORMULAS# }"
 VERSIONS="$(printf '%s\n' $VERSIONS | sort -t. -k1,1n -k2,2n | tr '\n' ' ')"; VERSIONS="${VERSIONS% }"
 
 case " $VERSIONS " in
+  *" ${GOLDO_PHP:-none} "*) PHP_DEFAULT="$GOLDO_PHP" ;;
   *" $MAIN_VER "*) PHP_DEFAULT="$MAIN_VER" ;;
   *) PHP_DEFAULT="${VERSIONS##* }" ;;
 esac
@@ -116,7 +118,7 @@ backup "$MAP_SCRIPT"
 # RewriteMap prg: reçoit un nom de sous-dossier sur stdin,
 # renvoie la version PHP à utiliser (contenu de son fichier .phpver).
 # Repli sur DEFAULT si .phpver absent/vide ou si la version n'a pas de socket FPM actif.
-# Généré par install-phpver.sh
+# Généré par goldo phpver
 EOF
   printf 'ROOT="%s"\nSOCKDIR="%s"\nDEFAULT="%s"\n' "$SITES_DIR" "$RUN_DIR" "$PHP_DEFAULT"
   cat <<'EOF'
@@ -142,7 +144,7 @@ sock() { printf 'proxy:unix:%s/php-fpm-%s.sock|fcgi://php%s' "$RUN_DIR" "$1" "${
 
 backup "$GLOBAL_CONF"
 {
-  echo "# --- Sélection dynamique de la version PHP (PHP-FPM) — généré par install-phpver.sh ---"
+  echo "# --- Sélection dynamique de la version PHP (PHP-FPM) — généré par goldo phpver ---"
   echo "ProxyTimeout 300"
   echo
   if [ "$LOCAL" -eq 1 ]; then
@@ -160,7 +162,7 @@ backup "$VHOST_INC"
   cat <<EOF
 # --- À inclure dans un <VirtualHost> (ou le serveur principal) dont le DocumentRoot est $SITES_DIR ---
 # Le 1er segment d'URL (sous-dossier) détermine la version PHP via son fichier .phpver
-# Généré par install-phpver.sh
+# Généré par goldo phpver
 RewriteEngine On
 # Map déclarée par vhost : une RewriteMap globale n'est pas héritée par les vhosts
 RewriteMap phpver "prg:$MAP_SCRIPT"

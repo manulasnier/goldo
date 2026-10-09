@@ -1,0 +1,47 @@
+#!/bin/bash
+
+for lib in utils version; do
+    if [ ! -f "$LIB_DIR/${lib}.sh" ]; then
+        echo "[ERROR] Librairie manquante : $LIB_DIR/${lib}.sh" >&2
+        exit 1
+    fi
+    source "$LIB_DIR/${lib}.sh"
+done
+
+show_config() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        print_warning "Aucune configuration : lancez d'abord goldo install"
+        return 1
+    fi
+
+    print_info "Configuration actuelle dans $CONFIG_FILE :"
+    echo "----------------------------------------"
+    cat "$CONFIG_FILE"
+    echo "----------------------------------------"
+    print_info "Pour la modifier : goldo install (les valeurs actuelles sont proposées par défaut)"
+}
+
+reset_config() {
+    read -r -p "Supprimer $CONFIG_FILE ? Le devstack installé n'est pas touché. (o/N) " confirm
+    if [[ "$confirm" =~ ^[Oo]$ ]]; then
+        rm -f "$CONFIG_FILE"
+        print_success "Configuration supprimée : $CONFIG_FILE"
+    else
+        print_info "Réinitialisation annulée."
+    fi
+}
+
+case "${1:-show}" in
+    show|display)
+        show_config
+        ;;
+    reset)
+        reset_config
+        ;;
+    *)
+        echo -e "${BLUE}Utilisation:${NC} goldo config [show|reset]"
+        echo ""
+        echo -e "  ${GREEN}show${NC}    Affiche la configuration (défaut)"
+        echo -e "  ${GREEN}reset${NC}   Supprime le fichier de configuration"
+        ;;
+esac

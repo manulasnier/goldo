@@ -26,5 +26,6 @@ Temporary Items
 *.swp
 *~
 
-# --- Sauvegardes générées par install-phpver.sh ---
+# --- Sauvegardes générées par goldo ---
 *.bak-phpver*
+*.bak-goldo*

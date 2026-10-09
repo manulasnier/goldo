@@ -1,0 +1,461 @@
+#!/bin/bash
+set -uo pipefail
+
+# ==============================================================================
+# goldo install — devstack macOS Homebrew
+# Apache (httpd) + PHP-FPM + MariaDB ou MySQL + domaine local + SSL (mkcert)
+#
+# Idempotent : relancer « goldo i » reprend la configuration de ~/.goldo
+# comme valeurs par défaut et régénère la conf.
+# ==============================================================================
+
+for lib in utils version; do
+    if [ ! -f "$LIB_DIR/${lib}.sh" ]; then
+        echo "[ERROR] Librairie manquante : $LIB_DIR/${lib}.sh" >&2
+        exit 1
+    fi
+    source "$LIB_DIR/${lib}.sh"
+done
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+
+# ==============================================================================
+# Pré-requis
+# ==============================================================================
+
+check_requirements() {
+    if [ "$(uname -s)" != "Darwin" ]; then
+        print_error "goldo install ne fonctionne que sur macOS."
+        exit 1
+    fi
+
+    if [ "$(id -u)" -eq 0 ]; then
+        print_error "Ne pas lancer en root / sudo (goldo demande sudo lui-même si besoin)."
+        exit 1
+    fi
+
+    if ! command -v brew &>/dev/null; then
+        for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+            [ -x "$b" ] && eval "$("$b" shellenv)" && break
+        done
+    fi
+
+    if ! command -v brew &>/dev/null; then
+        print_warning "Homebrew n'est pas installé."
+        if ask_yes_no "Installer Homebrew maintenant ?" "o"; then
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || {
+                print_error "Échec de l'installation de Homebrew"
+                exit 1
+            }
+            for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+                [ -x "$b" ] && eval "$("$b" shellenv)" && break
+            done
+        else
+            print_error "Homebrew est requis : https://brew.sh"
+            exit 1
+        fi
+    fi
+
+    PREFIX="$(brew --prefix)"
+    HTTPD_ETC="$PREFIX/etc/httpd"
+    HTTPD_CONF="$HTTPD_ETC/httpd.conf"
+    GOLDO_CONF="$HTTPD_ETC/extra/goldo.conf"
+    CERTS_DIR="$HTTPD_ETC/certs"
+}
+
+# ==============================================================================
+# Questions
+# ==============================================================================
+
+ask_questions() {
+    echo -e "${BLUE}"
+    echo "╔════════════════════════════════════════╗"
+    echo "║        goldo — devstack macOS          ║"
+    echo "╚════════════════════════════════════════╝"
+    echo -e "${NC}"
+
+    local doc_root
+    ask_value "Dossier racine des projets (DocumentRoot)" "${GOLDO_DOC_ROOT:-$HOME/Sites}" doc_root
+    doc_root="${doc_root/#\~/$HOME}"
+    DOC_ROOT="${doc_root%/}"
+
+    while true; do
+        ask_value "Version de PHP" "${GOLDO_PHP:-8.5}" PHP_VERSION
+        validate_php_version "$PHP_VERSION" && break
+        print_warning "Format attendu : X.Y (ex. 8.5)"
+    done
+
+    ask_choice "Base de données" "${GOLDO_DB:-mariadb}" DB mariadb mysql
+
+    # mariadb et mysql sont en conflit dans Homebrew
+    local other="mysql"
+    [ "$DB" = "mysql" ] && other="mariadb"
+    if brew list --formula "$other" &>/dev/null; then
+        print_warning "$other est déjà installé : il est incompatible avec $DB."
+        if ask_yes_no "Conserver $other à la place ?" "o"; then
+            DB="$other"
+        else
+            print_error "Désinstallez d'abord $other (brew services stop $other && brew uninstall $other), puis relancez goldo i."
+            exit 1
+        fi
+    fi
+
+    while true; do
+        ask_value "Domaine local" "${GOLDO_DOMAIN:-dev.lo}" DOMAIN
+        DOMAIN=$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]')
+        validate_domain "$DOMAIN" && break
+        print_warning "Domaine invalide : $DOMAIN (ex. dev.lo)"
+    done
+
+    local ssl_default="o"
+    [ "${GOLDO_SSL:-1}" = "0" ] && ssl_default="n"
+    if ask_yes_no "Installer un certificat SSL local (mkcert) pour https://$DOMAIN ?" "$ssl_default"; then
+        SSL=1
+    else
+        SSL=0
+    fi
+
+    echo ""
+    print_info "Récapitulatif :"
+    echo "   DocumentRoot : $DOC_ROOT"
+    echo "   PHP          : $PHP_VERSION"
+    echo "   Base         : $DB"
+    echo "   Domaine      : $DOMAIN"
+    echo "   SSL          : $([ "$SSL" -eq 1 ] && echo "oui (https://$DOMAIN)" || echo non)"
+    echo ""
+
+    if ! ask_yes_no "Lancer l'installation ?" "o"; then
+        print_info "Installation annulée."
+        exit 0
+    fi
+}
+
+save_config() {
+    cat > "$CONFIG_FILE" <<EOF
+# Configuration goldo — générée par « goldo install »
+GOLDO_DOC_ROOT="$DOC_ROOT"
+GOLDO_PHP="$PHP_VERSION"
+GOLDO_DB="$DB"
+GOLDO_DOMAIN="$DOMAIN"
+GOLDO_SSL="$SSL"
+EOF
+    chmod 600 "$CONFIG_FILE"
+    print_success "Configuration enregistrée : $CONFIG_FILE"
+}
+
+# ==============================================================================
+# Paquets Homebrew
+# ==============================================================================
+
+brew_install() {
+    local formula=$1
+    if brew list --formula "${formula##*/}" &>/dev/null; then
+        print_info "$formula déjà installé"
+        return 0
+    fi
+    print_info "Installation de $formula..."
+    brew install "$formula" || {
+        print_error "Échec : brew install $formula"
+        exit 1
+    }
+}
+
+# Formule Homebrew d'une version PHP : php (version courante), php@X.Y, ou tap shivammathur
+php_formula() {
+    local v=$1
+    local main
+    main=$(brew info --formula php 2>/dev/null | sed -nE '1s/.*stable ([0-9]+\.[0-9]+).*/\1/p')
+
+    if [ "$v" = "$main" ]; then
+        echo "php"
+    elif brew info --formula "php@$v" &>/dev/null; then
+        echo "php@$v"
+    else
+        echo "shivammathur/php/php@$v"
+    fi
+}
+
+install_packages() {
+    print_step "Paquets Homebrew"
+
+    brew_install httpd
+
+    PHP_FORMULA=$(php_formula "$PHP_VERSION")
+    if [[ "$PHP_FORMULA" == shivammathur/* ]]; then
+        brew tap shivammathur/php || { print_error "Échec : brew tap shivammathur/php"; exit 1; }
+    fi
+    brew_install "$PHP_FORMULA"
+
+    brew_install "$DB"
+
+    if [ "$SSL" -eq 1 ]; then
+        brew_install mkcert
+        brew_install nss
+    fi
+}
+
+# ==============================================================================
+# Base de données
+# ==============================================================================
+
+setup_database() {
+    print_step "Base de données : $DB"
+
+    brew services start "$DB" >/dev/null 2>&1 || true
+    if brew services list | grep -qE "^$DB[[:space:]]+started"; then
+        print_success "$DB démarré"
+    else
+        print_warning "$DB ne semble pas démarré : brew services list"
+    fi
+}
+
+# ==============================================================================
+# Certificat SSL
+# ==============================================================================
+
+setup_ssl() {
+    [ "$SSL" -eq 1 ] || return 0
+    print_step "Certificat SSL local (mkcert)"
+
+    print_info "Autorité de certification locale (mot de passe administrateur possible)..."
+    mkcert -install || {
+        print_error "Échec : mkcert -install"
+        exit 1
+    }
+
+    mkdir -p "$CERTS_DIR"
+    CERT_FILE="$CERTS_DIR/$DOMAIN.pem"
+    KEY_FILE="$CERTS_DIR/$DOMAIN-key.pem"
+
+    if [ -f "$CERT_FILE" ] && [ -f "$KEY_FILE" ]; then
+        print_info "Certificat existant conservé : $CERT_FILE"
+    else
+        mkcert -cert-file "$CERT_FILE" -key-file "$KEY_FILE" \
+            "$DOMAIN" "*.$DOMAIN" localhost 127.0.0.1 ::1 || {
+            print_error "Échec de la génération du certificat"
+            exit 1
+        }
+        print_success "Certificat créé : $CERT_FILE"
+    fi
+}
+
+# ==============================================================================
+# /etc/hosts
+# ==============================================================================
+
+setup_hosts() {
+    print_step "Résolution du domaine : /etc/hosts"
+
+    if awk -v d="$DOMAIN" '$1 !~ /^#/ { for (i = 2; i <= NF; i++) if ($i == d) f = 1 } END { exit !f }' /etc/hosts; then
+        print_info "$DOMAIN déjà présent dans /etc/hosts"
+        return 0
+    fi
+
+    print_info "Ajout de $DOMAIN dans /etc/hosts (sudo)..."
+    sudo cp -p /etc/hosts "/etc/hosts.bak-goldo-$STAMP"
+    printf '\n# goldo\n127.0.0.1\t%s\n::1\t\t%s\n' "$DOMAIN" "$DOMAIN" | sudo tee -a /etc/hosts >/dev/null
+    sudo dscacheutil -flushcache
+    sudo killall -HUP mDNSResponder 2>/dev/null || true
+    print_success "$DOMAIN → 127.0.0.1"
+}
+
+# ==============================================================================
+# Apache
+# ==============================================================================
+
+# Fichiers de conf Apache actifs : httpd.conf + ses Include, hors goldo.conf
+active_conf_files() {
+    echo "$HTTPD_CONF"
+    awk 'tolower($1) ~ /^include(optional)?$/ { gsub(/"/, "", $2); print $2 }' "$HTTPD_CONF" |
+    while read -r p; do
+        case "$p" in /*) ;; *) p="$HTTPD_ETC/$p" ;; esac
+        for f in $p; do
+            [ -f "$f" ] && [ "$f" != "$GOLDO_CONF" ] && echo "$f"
+        done
+    done
+}
+
+setup_apache() {
+    print_step "Apache : $HTTPD_CONF"
+
+    [ -f "$HTTPD_CONF" ] || { print_error "httpd.conf introuvable ($HTTPD_CONF)"; exit 1; }
+
+    mkdir -p "$DOC_ROOT"
+    DOC_ROOT="$(cd "$DOC_ROOT" && pwd -P)"
+
+    cp -p "$HTTPD_CONF" "$HTTPD_CONF.bak-goldo-$STAMP"
+
+    SSL="$SSL" DOC_ROOT="$DOC_ROOT" INC="$GOLDO_CONF" perl -0pi -e '
+        my $s = $ENV{DOC_ROOT};
+        # Port 80 (Homebrew écoute sur 8080 par défaut)
+        s/^Listen[ \t]+8080\b/Listen 80/m;
+        s/^#?ServerName[ \t]+\S+/ServerName localhost:80/m;
+        # DocumentRoot du serveur principal + son bloc <Directory>
+        if (/^DocumentRoot[ \t]+"?([^"\n]+?)"?[ \t]*$/m) {
+            my $old = $1;
+            s/^DocumentRoot[ \t]+.*$/DocumentRoot "$s"/m;
+            s/^<Directory[ \t]+"?\Q$old\E\/?"?>/<Directory "$s">/m if $old ne $s;
+        }
+        s{(<Directory[ \t]+"\Q$s\E">)(.*?)(</Directory>)}{
+            my ($o, $b, $c) = ($1, $2, $3);
+            $b =~ s/^([ \t]*AllowOverride)[ \t]+.*$/$1 All/m;
+            "$o$b$c";
+        }se;
+        s/^([ \t]*DirectoryIndex)[ \t]+index\.html[ \t]*$/$1 index.php index.html/m;
+        # Modules
+        s/^#[ \t]*(LoadModule\s+(?:rewrite_module|http2_module)\s)/$1/mg;
+        if ($ENV{SSL}) {
+            s/^#[ \t]*(LoadModule\s+(?:ssl_module|socache_shmcb_module)\s)/$1/mg;
+        }
+        # Include de la conf goldo (vhosts)
+        unless (/^Include\s+"?\Q$ENV{INC}\E/m) {
+            s/^(#?[ \t]*Include\s+\S*httpd-vhosts\.conf)/# Vhosts goldo\nInclude $ENV{INC}\n$1/m
+                or $_ .= "\n# Vhosts goldo\nInclude $ENV{INC}\n";
+        }
+    ' "$HTTPD_CONF"
+    print_success "httpd.conf : Listen 80, DocumentRoot $DOC_ROOT, AllowOverride All"
+
+    write_vhosts
+}
+
+write_vhosts() {
+    local conf_files
+    conf_files="$(active_conf_files)"
+
+    # Domaine déjà déclaré dans un autre vhost : pas de doublon
+    local declared
+    declared=$(echo "$conf_files" | grep -vxF "$HTTPD_CONF" | while read -r f; do
+        awk -v d="$DOMAIN" '
+            tolower($1) == "servername" || tolower($1) == "serveralias" {
+                for (i = 2; i <= NF; i++) { h = $i; sub(/:[0-9]+$/, "", h); if (h == d) { print FILENAME; exit } }
+            }' "$f"
+    done)
+
+    # Listen 443 déjà présent (httpd-ssl.conf actif par ex.)
+    local has_443=0
+    echo "$conf_files" | xargs grep -hqE '^[[:space:]]*Listen[[:space:]]+([^[:space:]]+:)?443\b' 2>/dev/null && has_443=1
+
+    [ -f "$GOLDO_CONF" ] && cp -p "$GOLDO_CONF" "$GOLDO_CONF.bak-goldo-$STAMP"
+
+    {
+        echo "# Vhosts goldo — généré par « goldo install », ne pas modifier à la main"
+        echo "# DocumentRoot : $DOC_ROOT — https://$DOMAIN/<projet>/"
+        echo ""
+
+        if [ -n "$declared" ]; then
+            echo "# $DOMAIN est déjà déclaré dans :"
+            echo "$declared" | sed 's/^/#   /'
+            echo "# Aucun vhost généré ici pour éviter un doublon."
+        else
+            cat <<EOF
+<VirtualHost *:80>
+    ServerName $DOMAIN
+    ServerAlias *.$DOMAIN
+    DocumentRoot "$DOC_ROOT"
+    <Directory "$DOC_ROOT">
+        Options FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+</VirtualHost>
+EOF
+        fi
+
+        if [ "$SSL" -eq 1 ] && { [ "$has_443" -eq 0 ] || [ -z "$declared" ]; }; then
+            echo ""
+            echo "<IfModule ssl_module>"
+            if [ "$has_443" -eq 0 ]; then
+                cat <<EOF
+Listen 443
+SSLProtocol all -SSLv3 -TLSv1 -TLSv1.1
+SSLSessionCache "shmcb:$PREFIX/var/run/httpd/ssl_scache(512000)"
+SSLSessionCacheTimeout 300
+EOF
+            fi
+            if [ -z "$declared" ]; then
+                cat <<EOF
+
+<VirtualHost *:443>
+    ServerName $DOMAIN
+    ServerAlias *.$DOMAIN
+    DocumentRoot "$DOC_ROOT"
+    <Directory "$DOC_ROOT">
+        Options FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+    <IfModule http2_module>
+        Protocols h2 http/1.1
+    </IfModule>
+    SSLEngine on
+    SSLCertificateFile "$CERT_FILE"
+    SSLCertificateKeyFile "$KEY_FILE"
+</VirtualHost>
+EOF
+            fi
+            echo "</IfModule>"
+        fi
+    } > "$GOLDO_CONF"
+
+    if [ -n "$declared" ]; then
+        print_warning "$DOMAIN est déjà déclaré dans : $(echo "$declared" | tr '\n' ' ')— vhost goldo non généré"
+    else
+        print_success "Vhosts générés : $GOLDO_CONF"
+    fi
+}
+
+# ==============================================================================
+# PHP-FPM multi-versions + redémarrage + test (commande phpver)
+# ==============================================================================
+
+setup_php() {
+    print_step "PHP-FPM $PHP_VERSION"
+
+    GOLDO_DOC_ROOT="$DOC_ROOT" GOLDO_PHP="$PHP_VERSION" bash "$COMMANDS_DIR/phpver" || {
+        print_error "Échec de la configuration PHP-FPM / Apache"
+        print_info "Sauvegardes : $HTTPD_CONF.bak-goldo-$STAMP"
+        exit 1
+    }
+}
+
+# ==============================================================================
+# Main
+# ==============================================================================
+
+summary() {
+    local scheme="http"
+    [ "$SSL" -eq 1 ] && scheme="https"
+
+    echo ""
+    print_success "Devstack installé !"
+    echo ""
+    echo "   Projets      : $DOC_ROOT/<projet>"
+    echo "   URL          : $scheme://$DOMAIN/<projet>/"
+    echo "   PHP          : $PHP_VERSION (autre version par projet : echo 8.2 > <projet>/.phpver)"
+    echo "   Base         : $DB — brew services restart $DB"
+    if [ "$DB" = "mariadb" ]; then
+        echo "                  connexion : mariadb -u root (via sudo) ou mariadb -u $(id -un)"
+        echo "                  sécuriser : sudo mariadb-secure-installation"
+    else
+        echo "                  connexion : mysql -u root (sans mot de passe)"
+        echo "                  sécuriser : mysql_secure_installation"
+    fi
+    echo "   Apache       : brew services restart httpd"
+    echo "   Logs         : $PREFIX/var/log/httpd/error_log"
+    echo ""
+}
+
+main() {
+    check_requirements
+    ask_questions
+    save_config
+    install_packages
+    setup_database
+    setup_ssl
+    setup_hosts
+    setup_apache
+    setup_php
+    summary
+}
+
+main "$@"

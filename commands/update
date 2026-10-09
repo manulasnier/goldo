@@ -1,0 +1,84 @@
+#!/bin/bash
+set -euo pipefail
+
+for lib in utils version; do
+    if [ ! -f "$LIB_DIR/${lib}.sh" ]; then
+        echo "[ERROR] Librairie manquante : $LIB_DIR/${lib}.sh" >&2
+        exit 1
+    fi
+    source "$LIB_DIR/${lib}.sh"
+done
+
+TEMP_DIR="$(mktemp -d)"
+
+cleanup() {
+    rm -rf "$TEMP_DIR"
+}
+trap cleanup EXIT
+
+perform_update() {
+    local latest_version=$1
+
+    print_info "Téléchargement de la version $latest_version..."
+
+    # git clone SANS sudo (user courant = accès SSH)
+    git -c advice.detachedHead=false clone --quiet --depth 1 --branch "v$latest_version" "$REPO_URL" "$TEMP_DIR/goldo" || {
+        print_error "Échec du téléchargement de la version $latest_version"
+        exit 1
+    }
+
+    local src="$TEMP_DIR/goldo"
+    [ -f "$src/bin/goldo" ] || {
+        print_error "Script principal introuvable dans le dépôt"
+        exit 1
+    }
+
+    # Injection de la version (le repo contient VERSION="0.0.0")
+    sed -i.bak -e "s/^VERSION=\".*\"/VERSION=\"$latest_version\"/" "$src/bin/goldo"
+    rm -f "$src/bin/goldo.bak"
+
+    print_info "Installation de la mise à jour..."
+    sudo -v || {
+        print_error "Droits administrateur nécessaires pour écrire dans $GOLDO_DIR"
+        exit 1
+    }
+
+    # install remplace chaque fichier (nouvel inode) au lieu de le réécrire sur
+    # place : bash lit ce script pendant son exécution, un cp l'écraserait
+    sudo install -m 755 "$src/bin/goldo" "$INSTALL_DIR/goldo"
+    sudo mkdir -p "$LIB_DIR" "$COMMANDS_DIR"
+    sudo install -m 644 "$src/lib/"* "$LIB_DIR/"
+    sudo install -m 755 "$src/commands/"* "$COMMANDS_DIR/"
+
+    print_success "Mise à jour vers la version $latest_version terminée !"
+}
+
+main() {
+    local latest_version
+    latest_version=$(get_latest_version)
+
+    if [ -z "$latest_version" ]; then
+        print_error "Impossible de récupérer la dernière version depuis le dépôt"
+        exit 1
+    fi
+
+    print_info "Version installée  : $VERSION"
+    print_info "Dernière version   : $latest_version"
+
+    if compare_versions "$VERSION" "$latest_version"; then
+        print_warning "Une nouvelle version ($latest_version) est disponible !"
+        read -p "Voulez-vous procéder à la mise à jour ? (o/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Oo]$ ]]; then
+            perform_update "$latest_version"
+        else
+            print_info "Mise à jour annulée"
+        fi
+    else
+        print_success "Vous utilisez déjà la dernière version ($VERSION)"
+    fi
+}
+
+# main et exit sur la même ligne : bash ne relit pas ce fichier après une
+# mise à jour qui l'aurait remplacé
+main "$@"; exit $?

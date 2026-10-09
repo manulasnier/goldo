@@ -1,7 +1,9 @@
-# goldorak-devstack
+# goldo
 
-Environnement de dev local macOS (Apple Silicon) : **Apache + PHP-FPM multi-versions**.
-Chaque sous-dossier de `~/Sites` tourne avec la version PHP indiquée dans son fichier `.phpver`.
+Devstack local macOS en une commande : **Apache (Homebrew) + PHP-FPM + MariaDB ou MySQL**,
+domaine local personnalisé et certificat **SSL** local (mkcert).
+
+Chaque sous-dossier du DocumentRoot tourne avec la version PHP indiquée dans son fichier `.phpver`.
 
 ```
 ~/Sites/
@@ -10,64 +12,84 @@ Chaque sous-dossier de `~/Sites` tourne avec la version PHP indiquée dans son f
 └── projet-c/       (pas de .phpver → version par défaut)
 ```
 
-## Pré-requis
-
-- macOS Apple Silicon, Homebrew installé dans `/opt/homebrew`
-- Dossier `~/Sites`
-- PHP via Homebrew, une ou plusieurs versions
-- Apache Homebrew (sauf si tu utilises l'Apache natif macOS avec `-m`)
+## Installation de la commande `goldo`
 
 ```bash
-# Dossier servi
-mkdir -p ~/Sites
-
-# PHP : version courante + anciennes versions (tap shivammathur)
-brew install php
-brew tap shivammathur/php
-brew install shivammathur/php/php@7.4 shivammathur/php/php@8.2   # selon besoins
-
-# Apache Homebrew (inutile avec -m)
-brew install httpd
+git clone git@github.com:manulasnier/goldo.git && \
+cd goldo && \
+./install.sh && \
+cd .. && \
+rm -rf goldo
 ```
 
-## Installation
+`install.sh` copie `goldo` dans `/usr/local/bin` (librairies dans `/usr/local/lib/goldo`),
+puis propose de lancer directement `goldo install`.
 
-```bash
-mkdir -p ~/bin
-cp install-phpver.sh ~/bin/
-chmod +x ~/bin/install-phpver.sh
-xattr -d com.apple.quarantine ~/bin/install-phpver.sh 2>/dev/null   # si téléchargé
+## Installer le devstack : `goldo install` (ou `goldo i`)
 
-# ~/bin dans le PATH (une seule fois)
-echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
+Toujours **sans sudo** : goldo demande sudo lui-même quand c'est nécessaire
+(`/etc/hosts`, autorité de certification mkcert).
 
-## Utilisation
+Questions posées (valeur par défaut entre crochets) :
 
-Toujours **sans sudo** (le script demande sudo lui-même en mode `-m`).
+| Question | Défaut |
+|---|---|
+| Dossier racine des projets (DocumentRoot) | `/Users/<vous>/Sites` |
+| Version de PHP | `8.5` |
+| Base de données | `mariadb` (ou `mysql`) |
+| Domaine local | `dev.lo` |
+| Certificat SSL local | oui |
+
+Ce que fait l'installation :
+
+1. Installe Homebrew s'il est absent (après confirmation)
+2. `brew install httpd`, PHP (`php`, `php@X.Y` ou tap `shivammathur/php`), `mariadb` ou `mysql`, `mkcert` + `nss` si SSL
+3. Démarre la base (`brew services start`)
+4. SSL : `mkcert -install` puis certificat `<domaine>`, `*.<domaine>`, `localhost` dans `$(brew --prefix)/etc/httpd/certs/`
+5. Ajoute le domaine dans `/etc/hosts`
+6. `httpd.conf` : `Listen 80`, `DocumentRoot`, `AllowOverride All`, `index.php`, modules SSL/HTTP2/rewrite
+7. Génère les vhosts HTTP (et HTTPS) dans `extra/goldo.conf`
+8. Configure PHP-FPM multi-versions (`goldo phpver`), redémarre PHP-FPM et Apache, teste chaque version
+
+Résultat : `https://dev.lo/<projet>/` sert `~/Sites/<projet>/`.
+
+Les réponses sont enregistrées dans `~/.goldo`. Relancer `goldo i` les propose par défaut :
+la commande est idempotente.
+
+Si le domaine est déjà déclaré dans un autre vhost (`httpd-vhosts.conf`, `httpd-ssl.conf`…),
+goldo ne génère pas de doublon et le signale.
+
+## Commandes
+
+| Commande | Rôle |
+|---|---|
+| `goldo install`, `goldo i` | Installe / reconfigure le devstack |
+| `goldo phpver`, `goldo p` | (Re)configure PHP-FPM multi-versions — à relancer après l'ajout d'une version PHP |
+| `goldo config`, `goldo c` | Affiche la configuration (`goldo config reset` pour la supprimer) |
+| `goldo update`, `goldo u` | Met à jour goldo (dernier tag `vX.Y.Z`) |
+| `goldo version`, `goldo -v` | Version installée / dernière version |
+| `goldo uninstall`, `goldo un` | Supprime la commande goldo (pas le devstack) |
+
+### `goldo phpver`
 
 | Commande | Apache | Accès |
 |---|---|---|
-| `install-phpver.sh` | Homebrew | vhosts dont le `DocumentRoot` est `~/Sites` (ex. `dev.lo`) |
-| `install-phpver.sh -l` | Homebrew | `http://localhost/<projet>/`, sans vhost ni HTTPS |
-| `install-phpver.sh -m` | natif macOS | vhosts dont le `DocumentRoot` est `~/Sites` |
-| `install-phpver.sh -m -l` | natif macOS | `http://localhost/<projet>/`, sans vhost ni HTTPS |
-
-Options :
+| `goldo phpver` | Homebrew | vhosts dont le `DocumentRoot` est celui de goldo |
+| `goldo phpver -l` | Homebrew | `http://localhost/<projet>/`, sans vhost ni HTTPS |
+| `goldo phpver -m` | natif macOS | vhosts dont le `DocumentRoot` est celui de goldo |
+| `goldo phpver -m -l` | natif macOS | `http://localhost/<projet>/`, sans vhost ni HTTPS |
 
 - `-m` : Apache natif macOS (`/etc/apache2`) au lieu d'Apache Homebrew — PHP reste géré par Homebrew
 - `-l` : mode localhost (port 80, sans vhost ni HTTPS)
 - `-n` : configure sans redémarrer les services ni lancer le test
-- `-h` : aide
 
-Version PHP par défaut : celle de la formule `php` de Homebrew (sinon la plus récente installée).
-
-**Relancer le script** après l'installation ou la suppression d'une version PHP : il est idempotent et régénère la liste des versions.
+Version PHP par défaut : celle choisie dans `goldo install`, sinon celle de la formule `php`.
 
 ## Choisir la version PHP d'un projet
 
 ```bash
+brew install shivammathur/php/php@7.4   # installer la version
+goldo phpver                            # la déclarer à Apache
 echo 7.4 > ~/Sites/mon-projet/.phpver
 ```
 
@@ -76,67 +98,37 @@ echo 7.4 > ~/Sites/mon-projet/.phpver
 - `.phpver` absent, vide ou version non installée → version par défaut
 - Les fichiers `.phpver` ne sont pas servis par Apache (403)
 
-## Tester
+## Fichiers modifiés
 
-Le script teste chaque version à la fin (sauf avec `-n`) :
-
-```
-   7.4   → 7.4 ✓
-   8.2   → 8.2 ✓
-   none  → 8.5 ✓
-==> Tout est OK.
-```
-
-Test manuel (mode `-l`) :
-
-```bash
-mkdir -p ~/Sites/_t74 ~/Sites/_tdef
-echo '<?php echo PHP_VERSION;' | tee ~/Sites/_t74/v.php ~/Sites/_tdef/v.php >/dev/null
-echo 7.4 > ~/Sites/_t74/.phpver
-for d in _t74 _tdef; do echo "$d → $(curl -s http://localhost/$d/v.php)"; done
-curl -s -o /dev/null -w ".phpver → %{http_code}\n" http://localhost/_t74/.phpver
-rm -rf ~/Sites/_t74 ~/Sites/_tdef
-```
-
-Attendu : 7.4.x, puis la version par défaut, puis 403.
-
-## Ce que le script modifie
-
-Chaque fichier modifié est sauvegardé en `<fichier>.bak-phpver-<date>`.
+Chaque fichier modifié est sauvegardé en `<fichier>.bak-goldo-<date>` ou `<fichier>.bak-phpver-<date>`.
 
 | Fichier | Modification |
 |---|---|
-| `/opt/homebrew/etc/php/X.Y/php-fpm.d/www.conf` | socket `/opt/homebrew/var/run/php-fpm-X.Y.sock`, `pm = ondemand` |
-| `httpd.conf` | active `proxy`, `proxy_fcgi`, `rewrite`, `mpm_event` (+ HTTP/2) ; désactive mod_php et `mpm_prefork` ; `User` = ton utilisateur |
-| `extra/phpver.conf` | conf globale (handler par défaut, blocage des `.phpver`) |
-| `extra/phpver-vhost.inc` | sélection de version par sous-dossier, inclus dans les vhosts concernés |
-| `bin/phpver-map` | script qui lit `.phpver` (RewriteMap) |
-| `httpd.conf` en mode `-l` | `DocumentRoot ~/Sites`, `AllowOverride All`, `Listen 80`, `ServerName localhost`, vhosts et HTTPS désactivés |
+| `~/.goldo` | réponses de `goldo install` |
+| `/etc/hosts` | `127.0.0.1 <domaine>` |
+| `httpd.conf` | port 80, DocumentRoot, modules, `Include extra/goldo.conf` et `extra/phpver.conf` ; mod_php désactivé ; `User` = votre utilisateur |
+| `extra/goldo.conf` | vhosts HTTP / HTTPS du domaine |
+| `certs/<domaine>.pem` | certificat mkcert (hors DocumentRoot : la clé n'est jamais servie) |
+| `etc/php/X.Y/php-fpm.d/www.conf` | socket `var/run/php-fpm-X.Y.sock`, `pm = ondemand` |
+| `extra/phpver.conf`, `extra/phpver-vhost.inc`, `bin/phpver-map` | sélection de version PHP par sous-dossier |
 
-Dossier de conf Apache : `/opt/homebrew/etc/httpd` (Homebrew) ou `/etc/apache2` (natif, `-m`).
+Dossier de conf Apache : `$(brew --prefix)/etc/httpd`.
 
 ## Commandes utiles
 
 ```bash
-# Redémarrer
-brew services restart php@7.4          # une version PHP
 brew services restart httpd            # Apache Homebrew (sans sudo !)
-sudo apachectl restart                 # Apache natif
-
-# État
+brew services restart php              # PHP-FPM
+brew services restart mariadb          # ou mysql
 brew services list
-ls /opt/homebrew/var/run/php-fpm-*.sock
-
-# Logs
-tail -20 /opt/homebrew/var/log/httpd/error_log   # Apache Homebrew
-tail -20 /var/log/apache2/error_log              # Apache natif
-tail -20 /opt/homebrew/var/log/php-fpm.log       # PHP-FPM
+tail -20 "$(brew --prefix)/var/log/httpd/error_log"
+tail -20 "$(brew --prefix)/var/log/php-fpm.log"
 ```
 
 ## Pièges connus
 
-- **Ne pas lancer Apache Homebrew avec `sudo`** : il change le propriétaire de fichiers Homebrew et crée une 2ᵉ instance. macOS autorise le port 80 sans root.
-- **Après un redémarrage d'Apache**, attendre 1–2 s avant de tester (requêtes vides sinon).
-- **Ne plus utiliser `sphp`** ni de `LoadModule php_module` : le script désactive mod_php.
-- **Nouvelle version PHP installée** : relancer `install-phpver.sh`.
-- **Un seul Apache sur le port 80** : le script arrête l'autre (Homebrew ou natif) au besoin.
+- **Ne pas lancer Apache Homebrew avec `sudo`** : il change le propriétaire de fichiers Homebrew et crée une 2ᵉ instance. macOS autorise les ports 80/443 sans root.
+- **MariaDB et MySQL sont incompatibles** dans Homebrew : un seul des deux.
+- **Après un redémarrage d'Apache**, attendre 1–2 s avant de tester.
+- **Nouvelle version PHP installée** : relancer `goldo phpver`.
+- **Un seul Apache sur le port 80** : goldo arrête l'Apache natif macOS au besoin.

@@ -1,0 +1,44 @@
+#!/bin/bash
+set -euo pipefail
+
+for lib in utils version; do
+    if [ ! -f "$LIB_DIR/${lib}.sh" ]; then
+        echo "[ERROR] Librairie manquante : $LIB_DIR/${lib}.sh" >&2
+        exit 1
+    fi
+    source "$LIB_DIR/${lib}.sh"
+done
+
+main() {
+    echo -e "${BLUE}"
+    echo "╔════════════════════════════════════════╗"
+    echo "║        Désinstallation de goldo        ║"
+    echo "╚════════════════════════════════════════╝"
+    echo -e "${NC}"
+    print_info "Seule la commande goldo est supprimée : Apache, PHP, la base et les certificats restent en place."
+
+    read -p "Voulez-vous vraiment désinstaller goldo ? (o/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Oo]$ ]]; then
+        print_info "Désinstallation annulée."
+        exit 0
+    fi
+
+    read -p "Supprimer aussi la configuration $CONFIG_FILE ? (o/N) " -n 1 -r
+    echo
+    local remove_config=false
+    [[ $REPLY =~ ^[Oo]$ ]] && remove_config=true
+
+    sudo rm -f "$INSTALL_DIR/goldo"
+    sudo rm -rf "$GOLDO_DIR"
+    print_success "Fichiers goldo supprimés."
+
+    if [ "$remove_config" = true ]; then
+        rm -f "$CONFIG_FILE"
+        print_success "Configuration supprimée."
+    fi
+
+    print_success "Désinstallation terminée."
+}
+
+main

@@ -1,0 +1,143 @@
+#!/bin/bash
+
+# ==============================================================================
+# Couleurs
+# ==============================================================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+export RED GREEN YELLOW BLUE NC
+
+# ==============================================================================
+# Chemins
+# ==============================================================================
+
+REPO_URL="git@github.com:manulasnier/goldo.git"
+CONFIG_FILE="$HOME/.goldo"
+VERSION="0.0.0"
+
+INSTALL_DIR="/usr/local/bin"
+GOLDO_DIR="/usr/local/lib/goldo"
+COMMANDS_DIR="$GOLDO_DIR/commands"
+LIB_DIR="$GOLDO_DIR/lib"
+
+export REPO_URL CONFIG_FILE VERSION INSTALL_DIR GOLDO_DIR COMMANDS_DIR LIB_DIR
+
+# ==============================================================================
+# Chargement des librairies
+# ==============================================================================
+
+for lib in utils version; do
+    if [ ! -f "$LIB_DIR/${lib}.sh" ]; then
+        echo -e "${RED}[ERROR]${NC} Librairie manquante : $LIB_DIR/${lib}.sh" >&2
+        exit 1
+    fi
+    source "$LIB_DIR/${lib}.sh"
+done
+
+# ==============================================================================
+# Exécute une commande
+# ==============================================================================
+
+run_command() {
+    local cmd="$1"
+    shift
+    local cmd_path="$COMMANDS_DIR/$cmd"
+
+    if [ ! -f "$cmd_path" ]; then
+        print_error "Commande introuvable : $cmd_path"
+        exit 1
+    fi
+
+    bash "$cmd_path" "$@"
+}
+
+# ==============================================================================
+# Affiche l'aide
+# ==============================================================================
+
+show_help() {
+    echo -e "${BLUE}Usage:${NC} goldo <command> [options]"
+    echo ""
+    echo -e "${BLUE}Commands:${NC}"
+    echo -e "  ${GREEN}install, i${NC}          Installe le devstack (Apache, PHP-FPM, MariaDB/MySQL, SSL local)"
+    echo -e "  ${GREEN}phpver, p${NC}           (Re)configure PHP-FPM multi-versions (.phpver par projet)"
+    echo -e "  ${GREEN}config, c${NC}           Affiche la configuration du devstack"
+    echo -e "  ${GREEN}update, u${NC}           Met à jour goldo"
+    echo -e "  ${GREEN}version, -v${NC}         Affiche la version actuelle - dernière version"
+    echo -e "  ${GREEN}help, -h${NC}            Documentation"
+    echo -e "  ${GREEN}uninstall, un${NC}       Désinstalle goldo du système (pas le devstack)"
+    exit 0
+}
+
+# ==============================================================================
+# Affiche la version
+# ==============================================================================
+
+show_version() {
+    echo -e "${BLUE}goldo - devstack macOS${NC}"
+    echo -e "Version installée : ${GREEN}$VERSION${NC}"
+
+    LATEST_VERSION=$(get_latest_version 2>/dev/null)
+    if [ -n "$LATEST_VERSION" ]; then
+        echo -e "Dernière version  : ${YELLOW}$LATEST_VERSION${NC}"
+
+        if compare_versions "$VERSION" "$LATEST_VERSION"; then
+            echo -e "\n${YELLOW}Une mise à jour est disponible !${NC}"
+            echo -e "Utilisez ${GREEN}goldo update${NC} pour mettre à jour vers la version $LATEST_VERSION"
+        fi
+    fi
+
+    exit 0
+}
+
+# ==============================================================================
+# Point d'entrée
+# ==============================================================================
+
+if [ $# -eq 0 ]; then
+    show_help
+fi
+
+# Les commandes lisent la configuration du devstack si elle existe
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+    export GOLDO_DOC_ROOT GOLDO_PHP GOLDO_DB GOLDO_DOMAIN GOLDO_SSL
+fi
+
+case "$1" in
+    install|i)
+        shift
+        run_command "install" "$@"
+        ;;
+    phpver|p)
+        shift
+        run_command "phpver" "$@"
+        ;;
+    config|c)
+        shift
+        run_command "config" "$@"
+        ;;
+    update|u)
+        shift
+        run_command "update" "$@"
+        ;;
+    uninstall|un)
+        shift
+        run_command "uninstall" "$@"
+        ;;
+    version|-v)
+        show_version
+        ;;
+    help|-h)
+        show_help
+        ;;
+    *)
+        print_error "Commande inconnue : $1. Utilisez 'goldo -h' pour voir les commandes disponibles."
+        exit 1
+        ;;
+esac

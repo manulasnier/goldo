@@ -1,0 +1,17 @@
+# Changelog
+
+Toutes les modifications notables de ce projet seront documentées dans ce fichier.
+
+Le format est basé sur [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/),
+et ce projet adhère à [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.1.0] - 2026-10-09
+
+### Ajouté
+- commande `goldo` (structure pw-cli : `bin/`, `lib/`, `commands/`, `install.sh`)
+- `goldo install` : devstack macOS Homebrew — Apache, PHP-FPM, MariaDB ou MySQL, domaine local (`/etc/hosts`), SSL local mkcert, vhosts dans `extra/goldo.conf`
+- configuration enregistrée dans `~/.goldo`, reprise par défaut à chaque relance
+- `goldo config`, `goldo update`, `goldo version`, `goldo uninstall`
+
+### Modifié
+- `install-phpver.sh` devient `goldo phpver` : DocumentRoot et version PHP par défaut lus dans `~/.goldo`, préfixe Homebrew détecté (`brew --prefix`)
